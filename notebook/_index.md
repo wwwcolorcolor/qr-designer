@@ -11,3 +11,4 @@ QR Designer: Vite + React + TypeScript tool using qr-code-styling library. IBM P
 - 0005 decision: Logo cropper pre-composites to hidden canvas with rounded-rect clip, feeds processed data URL to qr-code-styling
 - 0006 decision: Library stored in localStorage as JSON — configs + base64 logo data URLs + thumbnails. ~5-10MB limit, fine for personal use
 - 0007 decision: Auto-naming system QR-001, QR-002... with click-to-edit inline rename
+- 0008 ⚑ learning: Preview QR always renders transparent bg — container CSS handles visual background. Changing bgEnabled/bgColor must NOT trigger canvas update or it flickers.

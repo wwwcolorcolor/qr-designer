@@ -167,7 +167,6 @@ export function App() {
   const [qrName, setQrName] = useState(() => nextDefaultName(loadLibrary()));
   const [editingName, setEditingName] = useState(false);
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
-  const [saveLabel, setSaveLabel] = useState("Save");
   const [qrFade, setQrFade] = useState(true);
   const nameInputRef = useRef<HTMLInputElement>(null);
 
@@ -198,7 +197,7 @@ export function App() {
       dotsOptions: { type: config.dotType, color: config.dotColor },
       cornersSquareOptions: { type: config.eyeType, color: config.eyeColor },
       cornersDotOptions: { type: config.eyeDotType, color: config.eyeColor },
-      backgroundOptions: { color: config.bgEnabled ? config.bgColor : "transparent" },
+      backgroundOptions: { color: "transparent" },
       qrOptions: { errorCorrectionLevel: config.ecLevel },
       imageOptions: {
         crossOrigin: "anonymous",
@@ -214,21 +213,24 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Preview always renders transparent bg — the container CSS handles the visual background.
+  // Only depend on values that affect QR rendering (not bgEnabled/bgColor).
+  const { data, dotType, dotColor, eyeType, eyeDotType, eyeColor, ecLevel, logoMargin, logoSize } = config;
   const updateTimer = useRef<ReturnType<typeof setTimeout>>(null);
   useEffect(() => {
     if (updateTimer.current) clearTimeout(updateTimer.current);
     updateTimer.current = setTimeout(() => {
       qrCode.current?.update({
-        data: config.data || "https://example.com",
-        dotsOptions: { type: config.dotType, color: config.dotColor },
-        cornersSquareOptions: { type: config.eyeType, color: config.eyeColor },
-        cornersDotOptions: { type: config.eyeDotType, color: config.eyeColor },
-        backgroundOptions: { color: config.bgEnabled ? config.bgColor : "transparent" },
-        qrOptions: { errorCorrectionLevel: config.ecLevel },
+        data: data || "https://example.com",
+        dotsOptions: { type: dotType, color: dotColor },
+        cornersSquareOptions: { type: eyeType, color: eyeColor },
+        cornersDotOptions: { type: eyeDotType, color: eyeColor },
+        backgroundOptions: { color: "transparent" },
+        qrOptions: { errorCorrectionLevel: ecLevel },
         imageOptions: {
           crossOrigin: "anonymous",
-          margin: config.logoMargin,
-          imageSize: config.logoSize,
+          margin: logoMargin,
+          imageSize: logoSize,
         },
         image: logoCropped,
       });
@@ -236,7 +238,7 @@ export function App() {
     return () => {
       if (updateTimer.current) clearTimeout(updateTimer.current);
     };
-  }, [config, logoCropped]);
+  }, [data, dotType, dotColor, eyeType, eyeDotType, eyeColor, ecLevel, logoMargin, logoSize, logoCropped]);
 
   const handleLogoUpload = (file: File) => {
     const reader = new FileReader();
@@ -263,9 +265,10 @@ export function App() {
     setLogoCropState(state);
   }, []);
 
-  const flashSaveLabel = () => {
-    setSaveLabel("Saved!");
-    setTimeout(() => setSaveLabel("Save"), 1500);
+  const [saveFlash, setSaveFlash] = useState(false);
+  const flashSave = () => {
+    setSaveFlash(true);
+    setTimeout(() => setSaveFlash(false), 1200);
   };
 
   const saveToLibrary = async () => {
@@ -299,7 +302,7 @@ export function App() {
       saveLibrary(updated);
       setActiveItemId(id);
     }
-    flashSaveLabel();
+    flashSave();
   };
 
   const fadeQrAndDo = useCallback((fn: () => void) => {
@@ -348,7 +351,7 @@ export function App() {
   const PREVIEW_SIZE = 320;
   const EXPORT_SIZE = 1024;
 
-  const download = (extension: "png" | "svg") => {
+  const download = async (extension: "png" | "svg") => {
     const scale = EXPORT_SIZE / PREVIEW_SIZE;
     const exportQR = new QRCodeStyling({
       width: EXPORT_SIZE,
@@ -358,7 +361,7 @@ export function App() {
       dotsOptions: { type: config.dotType, color: config.dotColor },
       cornersSquareOptions: { type: config.eyeType, color: config.eyeColor },
       cornersDotOptions: { type: config.eyeDotType, color: config.eyeColor },
-      backgroundOptions: { color: config.bgEnabled ? config.bgColor : "transparent" },
+      backgroundOptions: config.bgEnabled ? { color: config.bgColor } : {},
       qrOptions: { errorCorrectionLevel: config.ecLevel },
       imageOptions: {
         crossOrigin: "anonymous",
@@ -367,7 +370,42 @@ export function App() {
       },
       image: logoCropped,
     });
-    exportQR.download({ name: (qrName || "qr-code").toLowerCase(), extension });
+
+    if (extension === "svg") {
+      // Render to temp container, post-process SVG, then download
+      const container = document.createElement("div");
+      exportQR.append(container);
+      await new Promise((r) => setTimeout(r, 150));
+
+      const svg = container.querySelector("svg");
+      if (!svg) return;
+
+      // Fix background: if bg is off, ensure no white fill leaks through
+      if (!config.bgEnabled) {
+        const rects = svg.querySelectorAll("rect");
+        for (const rect of rects) {
+          const fill = rect.getAttribute("fill");
+          if (
+            fill &&
+            (fill === "#ffffff" || fill === "#fff" || fill === "white" || fill === "transparent") &&
+            parseFloat(rect.getAttribute("width") || "0") >= EXPORT_SIZE * 0.9
+          ) {
+            rect.setAttribute("fill", "none");
+          }
+        }
+      }
+
+      const svgData = new XMLSerializer().serializeToString(svg);
+      const blob = new Blob([svgData], { type: "image/svg+xml" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${(qrName || "qr-code").toLowerCase()}.svg`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } else {
+      exportQR.download({ name: (qrName || "qr-code").toLowerCase(), extension });
+    }
   };
 
   return (
@@ -425,29 +463,24 @@ export function App() {
           ) : (
             <div className="designer-controls">
               <div className="name-row">
-                {editingName ? (
-                  <input
-                    ref={nameInputRef}
-                    className="name-input"
-                    type="text"
-                    value={qrName}
-                    onChange={(e) => setQrName(e.target.value)}
-                    onBlur={() => setEditingName(false)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") setEditingName(false);
-                    }}
-                    autoFocus
-                  />
-                ) : (
-                  <button
-                    className="name-display"
-                    onClick={() => setEditingName(true)}
-                  >
-                    {qrName}
-                  </button>
-                )}
-                <button className="save-btn-inline" onClick={saveToLibrary}>
-                  {saveLabel}
+                <input
+                  ref={nameInputRef}
+                  className={`name-field ${editingName ? "editing" : ""}`}
+                  type="text"
+                  value={qrName}
+                  readOnly={!editingName}
+                  onChange={(e) => setQrName(e.target.value)}
+                  onFocus={() => setEditingName(true)}
+                  onBlur={() => setEditingName(false)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      setEditingName(false);
+                      nameInputRef.current?.blur();
+                    }
+                  }}
+                />
+                <button className={`save-btn-inline ${saveFlash ? "saved" : ""}`} onClick={saveToLibrary}>
+                  Save
                 </button>
                 <button className={`new-btn-inline ${activeItemId ? "visible" : ""}`} onClick={startNew}>
                   New
@@ -662,6 +695,9 @@ export function App() {
                 )}
               </Section>
 
+              <div className="credit">
+                Designed + Engineered by <a href="https://x.com/wwwcolorcolor" target="_blank" rel="noopener noreferrer">@wwwcolorcolor</a>
+              </div>
             </div>
           )}
         </div>
@@ -670,10 +706,8 @@ export function App() {
       <div className="preview">
         <div className="preview-center">
           <div
-            className={`qr-container ${qrFade ? "" : "fading"}`}
-            style={{
-              background: config.bgEnabled ? config.bgColor : "#fff",
-            }}
+            className={`qr-container ${qrFade ? "" : "fading"} ${!config.bgEnabled ? "transparent-bg" : ""}`}
+            style={{ "--qr-bg": config.bgEnabled ? config.bgColor : "#fff" } as React.CSSProperties}
           >
             <div ref={qrRef} />
           </div>
