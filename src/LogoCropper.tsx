@@ -1,20 +1,30 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 
+export interface CropState {
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+}
+
 interface LogoCropperProps {
   imageSrc: string;
   size: number;
   borderRadius: number;
+  initialCropState?: CropState;
   onCropped: (dataUrl: string) => void;
+  onCropStateChange?: (state: CropState) => void;
 }
 
 export function LogoCropper({
   imageSrc,
   size,
   borderRadius,
+  initialCropState,
   onCropped,
+  onCropStateChange,
 }: LogoCropperProps) {
-  const [scale, setScale] = useState(1.5);
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [scale, setScale] = useState(initialCropState?.scale ?? 1);
+  const [offset, setOffset] = useState({ x: initialCropState?.offsetX ?? 0, y: initialCropState?.offsetY ?? 0 });
   const [dragging, setDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [imgNatural, setImgNatural] = useState({ w: 0, h: 0 });
@@ -27,10 +37,11 @@ export function LogoCropper({
     img.onload = () => {
       setImgNatural({ w: img.naturalWidth, h: img.naturalHeight });
       imgRef.current = img;
-      setScale(1.5);
-      setOffset({ x: 0, y: 0 });
+      setScale(initialCropState?.scale ?? 1);
+      setOffset({ x: initialCropState?.offsetX ?? 0, y: initialCropState?.offsetY ?? 0 });
     };
     img.src = imageSrc;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageSrc]);
 
   // Render to canvas + emit cropped result
@@ -77,6 +88,11 @@ export function LogoCropper({
     render();
   }, [render]);
 
+  // Report crop state changes back to parent
+  useEffect(() => {
+    onCropStateChange?.({ scale, offsetX: offset.x, offsetY: offset.y });
+  }, [scale, offset, onCropStateChange]);
+
   const handleMouseDown = (e: React.MouseEvent) => {
     setDragging(true);
     setDragStart({ x: e.clientX - offset.x, y: e.clientY - offset.y });
@@ -91,11 +107,6 @@ export function LogoCropper({
   };
 
   const handleMouseUp = () => setDragging(false);
-
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    setScale((s) => Math.max(0.5, Math.min(4, s - e.deltaY * 0.003)));
-  };
 
   // Preview: show the image behind a mask
   const previewSize = size;
@@ -122,7 +133,6 @@ export function LogoCropper({
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
-        onWheel={handleWheel}
       >
         {imgNatural.w > 0 && (
           <img

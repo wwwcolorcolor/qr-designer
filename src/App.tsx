@@ -1,11 +1,34 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
 import QRCodeStyling, {
   type DotType,
   type CornerSquareType,
   type CornerDotType,
   type ErrorCorrectionLevel,
 } from "qr-code-styling";
-import { LogoCropper } from "./LogoCropper";
+import { LogoCropper, type CropState } from "./LogoCropper";
+
+function Section({
+  title,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className={`section ${open ? "open" : ""}`}>
+      <button className="section-header" onClick={() => setOpen(!open)}>
+        <span>{title}</span>
+        <span className="section-icon" />
+      </button>
+      <div className="section-body">
+        <div className="section-inner">{children}</div>
+      </div>
+    </div>
+  );
+}
 
 const DOT_TYPES: { value: DotType; label: string }[] = [
   { value: "square", label: "Square" },
@@ -43,11 +66,23 @@ interface SavedQR {
   config: QRConfig;
   logoRawSrc?: string;
   logoCropped?: string;
+  logoCropState?: CropState;
   logoName: string;
   thumbnail: string;
 }
 
 const STORAGE_KEY = "qr-designer-library";
+
+function nextDefaultName(library: SavedQR[]): string {
+  const nums = library
+    .map((item) => {
+      const match = item.name.match(/^QR-(\d+)$/);
+      return match ? parseInt(match[1], 10) : 0;
+    })
+    .filter((n) => n > 0);
+  const next = nums.length > 0 ? Math.max(...nums) + 1 : 1;
+  return `QR-${String(next).padStart(3, "0")}`;
+}
 
 function loadLibrary(): SavedQR[] {
   try {
@@ -117,7 +152,7 @@ const DEFAULT_CONFIG: QRConfig = {
   ecLevel: "H",
   logoMargin: 8,
   logoSize: 0.35,
-  logoBorderRadius: 20,
+  logoBorderRadius: 8,
 };
 
 export function App() {
@@ -127,7 +162,14 @@ export function App() {
   const [logoRawSrc, setLogoRawSrc] = useState<string | undefined>();
   const [logoCropped, setLogoCropped] = useState<string | undefined>();
   const [logoName, setLogoName] = useState<string>("");
+  const [logoCropState, setLogoCropState] = useState<CropState | undefined>();
   const [library, setLibrary] = useState<SavedQR[]>(loadLibrary);
+  const [qrName, setQrName] = useState(() => nextDefaultName(loadLibrary()));
+  const [editingName, setEditingName] = useState(false);
+  const [activeItemId, setActiveItemId] = useState<string | null>(null);
+  const [saveLabel, setSaveLabel] = useState("Save");
+  const [qrFade, setQrFade] = useState(true);
+  const nameInputRef = useRef<HTMLInputElement>(null);
 
   const switchTab = useCallback((newTab: Tab) => {
     setTabFade(false);
@@ -147,7 +189,6 @@ export function App() {
     []
   );
 
-  // Initialize QR code
   useEffect(() => {
     qrCode.current = new QRCodeStyling({
       width: 320,
@@ -170,31 +211,37 @@ export function App() {
       qrRef.current.innerHTML = "";
       qrCode.current.append(qrRef.current);
     }
-    // Only run on mount
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Update QR code on config/logo changes
+  const updateTimer = useRef<ReturnType<typeof setTimeout>>(null);
   useEffect(() => {
-    qrCode.current?.update({
-      data: config.data || "https://example.com",
-      dotsOptions: { type: config.dotType, color: config.dotColor },
-      cornersSquareOptions: { type: config.eyeType, color: config.eyeColor },
-      cornersDotOptions: { type: config.eyeDotType, color: config.eyeColor },
-      backgroundOptions: { color: config.bgEnabled ? config.bgColor : "transparent" },
-      qrOptions: { errorCorrectionLevel: config.ecLevel },
-      imageOptions: {
-        crossOrigin: "anonymous",
-        margin: config.logoMargin,
-        imageSize: config.logoSize,
-      },
-      image: logoCropped,
-    });
+    if (updateTimer.current) clearTimeout(updateTimer.current);
+    updateTimer.current = setTimeout(() => {
+      qrCode.current?.update({
+        data: config.data || "https://example.com",
+        dotsOptions: { type: config.dotType, color: config.dotColor },
+        cornersSquareOptions: { type: config.eyeType, color: config.eyeColor },
+        cornersDotOptions: { type: config.eyeDotType, color: config.eyeColor },
+        backgroundOptions: { color: config.bgEnabled ? config.bgColor : "transparent" },
+        qrOptions: { errorCorrectionLevel: config.ecLevel },
+        imageOptions: {
+          crossOrigin: "anonymous",
+          margin: config.logoMargin,
+          imageSize: config.logoSize,
+        },
+        image: logoCropped,
+      });
+    }, 80);
+    return () => {
+      if (updateTimer.current) clearTimeout(updateTimer.current);
+    };
   }, [config, logoCropped]);
 
   const handleLogoUpload = (file: File) => {
     const reader = new FileReader();
     reader.onload = (e) => {
+      setLogoCropState(undefined);
       setLogoRawSrc(e.target?.result as string);
       setLogoName(file.name);
     };
@@ -204,6 +251,7 @@ export function App() {
   const removeLogo = () => {
     setLogoRawSrc(undefined);
     setLogoCropped(undefined);
+    setLogoCropState(undefined);
     setLogoName("");
   };
 
@@ -211,42 +259,100 @@ export function App() {
     setLogoCropped(dataUrl);
   }, []);
 
+  const handleCropStateChange = useCallback((state: CropState) => {
+    setLogoCropState(state);
+  }, []);
+
+  const flashSaveLabel = () => {
+    setSaveLabel("Saved!");
+    setTimeout(() => setSaveLabel("Save"), 1500);
+  };
+
   const saveToLibrary = async () => {
     const thumbnail = await generateThumbnail(config, logoCropped);
-    const entry: SavedQR = {
-      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      name: config.data.slice(0, 40) || "Untitled",
-      timestamp: Date.now(),
-      config,
-      logoRawSrc,
-      logoCropped,
-      logoName,
-      thumbnail,
-    };
-    const updated = [entry, ...library];
-    setLibrary(updated);
-    saveLibrary(updated);
+
+    if (activeItemId) {
+      // Update existing item in place
+      const updated = library.map((item) =>
+        item.id === activeItemId
+          ? { ...item, name: qrName || "Untitled", timestamp: Date.now(), config, logoRawSrc, logoCropped, logoCropState, logoName, thumbnail }
+          : item
+      );
+      setLibrary(updated);
+      saveLibrary(updated);
+    } else {
+      // Create new entry
+      const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      const entry: SavedQR = {
+        id,
+        name: qrName || "Untitled",
+        timestamp: Date.now(),
+        config,
+        logoRawSrc,
+        logoCropped,
+        logoCropState,
+        logoName,
+        thumbnail,
+      };
+      const updated = [entry, ...library];
+      setLibrary(updated);
+      saveLibrary(updated);
+      setActiveItemId(id);
+    }
+    flashSaveLabel();
+  };
+
+  const fadeQrAndDo = useCallback((fn: () => void) => {
+    setQrFade(false);
+    setTimeout(() => {
+      fn();
+      setTimeout(() => setQrFade(true), 60);
+    }, 180);
+  }, []);
+
+  const startNew = () => {
+    fadeQrAndDo(() => {
+      setConfig(DEFAULT_CONFIG);
+      setLogoRawSrc(undefined);
+      setLogoCropped(undefined);
+      setLogoCropState(undefined);
+      setLogoName("");
+      setActiveItemId(null);
+      setQrName(nextDefaultName(library));
+    });
   };
 
   const loadFromLibrary = (item: SavedQR) => {
-    setConfig(item.config);
-    setLogoRawSrc(item.logoRawSrc);
-    setLogoCropped(item.logoCropped);
-    setLogoName(item.logoName);
-    setTab("designer");
+    fadeQrAndDo(() => {
+      setConfig(item.config);
+      setLogoCropState(item.logoCropState);
+      setLogoRawSrc(item.logoRawSrc);
+      setLogoCropped(item.logoCropped);
+      setLogoName(item.logoName);
+      setQrName(item.name);
+      setActiveItemId(item.id);
+    });
+    switchTab("designer");
   };
 
   const deleteFromLibrary = (id: string) => {
     const updated = library.filter((item) => item.id !== id);
     setLibrary(updated);
     saveLibrary(updated);
+    if (activeItemId === id) {
+      setActiveItemId(null);
+      setQrName(nextDefaultName(updated));
+    }
   };
 
+  const PREVIEW_SIZE = 320;
+  const EXPORT_SIZE = 1024;
+
   const download = (extension: "png" | "svg") => {
-    // For high-res download, create a temporary large QR
+    const scale = EXPORT_SIZE / PREVIEW_SIZE;
     const exportQR = new QRCodeStyling({
-      width: 1024,
-      height: 1024,
+      width: EXPORT_SIZE,
+      height: EXPORT_SIZE,
       data: config.data || "https://example.com",
       type: extension === "svg" ? "svg" : "canvas",
       dotsOptions: { type: config.dotType, color: config.dotColor },
@@ -256,294 +362,325 @@ export function App() {
       qrOptions: { errorCorrectionLevel: config.ecLevel },
       imageOptions: {
         crossOrigin: "anonymous",
-        margin: config.logoMargin,
+        margin: Math.round(config.logoMargin * scale),
         imageSize: config.logoSize,
       },
       image: logoCropped,
     });
-    exportQR.download({ name: "qr-code", extension });
+    exportQR.download({ name: (qrName || "qr-code").toLowerCase(), extension });
   };
 
   return (
     <div className="app">
-      <div className="controls">
-        <div className="tab-bar">
-          <button
-            className={tab === "designer" ? "active" : ""}
-            onClick={() => switchTab("designer")}
-          >
-            Designer
-          </button>
-          <button
-            className={tab === "library" ? "active" : ""}
-            onClick={() => switchTab("library")}
-          >
-            Library ({library.length})
-          </button>
+      <div className="sidebar">
+        <div className="sidebar-header">
+          <div className="tab-bar">
+            <button
+              className={tab === "designer" ? "active" : ""}
+              onClick={() => switchTab("designer")}
+            >
+              QR Designer
+            </button>
+            <button
+              className={tab === "library" ? "active" : ""}
+              onClick={() => switchTab("library")}
+            >
+              Library ({library.length})
+            </button>
+          </div>
         </div>
 
-        <div className={`tab-content ${tabFade ? "visible" : ""}`}>
-        {tab === "library" ? (
-          <div className="library">
-            {library.length === 0 ? (
-              <div className="library-empty">
-                No saved QR codes yet
-              </div>
-            ) : (
-              <div className="library-grid">
-                {library.map((item) => (
-                  <div key={item.id} className="library-item">
-                    <img
-                      src={item.thumbnail}
-                      alt={item.name}
-                      onClick={() => loadFromLibrary(item)}
-                    />
-                    <div className="library-item-info">
-                      <span className="library-item-name">{item.name}</span>
-                      <span className="library-item-date">
-                        {new Date(item.timestamp).toLocaleDateString()}
-                      </span>
+        <div className={`sidebar-scroll ${tabFade ? "visible" : ""}`}>
+          {tab === "library" ? (
+            <div className="library">
+              {library.length === 0 ? (
+                <div className="library-empty">
+                  No saved QR codes yet
+                </div>
+              ) : (
+                <div className="library-grid">
+                  {library.map((item) => (
+                    <div key={item.id} className={`library-item ${item.id === activeItemId ? "active" : ""}`} onClick={() => loadFromLibrary(item)}>
+                      <img
+                        src={item.thumbnail}
+                        alt={item.name}
+                      />
+                      <div className="library-item-info">
+                        <span className="library-item-name">{item.name}</span>
+                        <span className="library-item-date">
+                          {new Date(item.timestamp).toLocaleDateString()}
+                        </span>
+                      </div>
+                      <button
+                        className="library-item-delete"
+                        onClick={(e) => { e.stopPropagation(); deleteFromLibrary(item.id); }}
+                      >
+                        x
+                      </button>
                     </div>
-                    <button
-                      className="library-item-delete"
-                      onClick={() => deleteFromLibrary(item.id)}
-                    >
-                      x
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ) : (
-        <>
-        <div className="control-group">
-          <label>Content</label>
-          <textarea
-            value={config.data}
-            onChange={(e) => set("data", e.target.value)}
-            placeholder="URL, text, or any data..."
-            rows={2}
-          />
-        </div>
-
-        <div className="control-group">
-          <label>Dot Style</label>
-          <div className="option-grid">
-            {DOT_TYPES.map((t) => (
-              <button
-                key={t.value}
-                className={config.dotType === t.value ? "active" : ""}
-                onClick={() => set("dotType", t.value)}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="control-group">
-          <label>Eye Frame</label>
-          <div className="option-grid">
-            {EYE_TYPES.map((t) => (
-              <button
-                key={t.value}
-                className={config.eyeType === t.value ? "active" : ""}
-                onClick={() => set("eyeType", t.value)}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="control-group">
-          <label>Eye Dot</label>
-          <div className="option-grid">
-            {EYE_DOT_TYPES.map((t) => (
-              <button
-                key={t.value}
-                className={config.eyeDotType === t.value ? "active" : ""}
-                onClick={() => set("eyeDotType", t.value)}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="control-group">
-          <label>Colors</label>
-          <div className="color-row">
-            <div className="color-input">
-              <input
-                type="color"
-                value={config.dotColor}
-                onChange={(e) => set("dotColor", e.target.value)}
-              />
-              <span>Dots</span>
+                  ))}
+                </div>
+              )}
             </div>
-            <div className="color-input">
-              <input
-                type="color"
-                value={config.eyeColor}
-                onChange={(e) => set("eyeColor", e.target.value)}
-              />
-              <span>Eyes</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="control-group">
-          <label>Background</label>
-          <div className="bg-toggle-row">
-            <button
-              className={!config.bgEnabled ? "active" : ""}
-              onClick={() => set("bgEnabled", false)}
-            >
-              OFF
-            </button>
-            <button
-              className={config.bgEnabled ? "active" : ""}
-              onClick={() => set("bgEnabled", true)}
-            >
-              ON
-            </button>
-            {config.bgEnabled && (
-              <div className="color-input">
-                <input
-                  type="color"
-                  value={config.bgColor}
-                  onChange={(e) => set("bgColor", e.target.value)}
-                />
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="control-group">
-          <label>Error Correction</label>
-          <div className="ec-grid">
-            {EC_LEVELS.map((l) => (
-              <button
-                key={l.value}
-                className={config.ecLevel === l.value ? "active" : ""}
-                onClick={() => set("ecLevel", l.value)}
-              >
-                {l.label}
-                <span>{l.pct}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="control-group">
-          <label>Center Logo</label>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            style={{ display: "none" }}
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) handleLogoUpload(file);
-            }}
-          />
-          {logoRawSrc ? (
-            <>
-              <div className="logo-header">
-                <span>{logoName}</span>
-                <button className="logo-remove" onClick={removeLogo}>
-                  x
+          ) : (
+            <div className="designer-controls">
+              <div className="name-row">
+                {editingName ? (
+                  <input
+                    ref={nameInputRef}
+                    className="name-input"
+                    type="text"
+                    value={qrName}
+                    onChange={(e) => setQrName(e.target.value)}
+                    onBlur={() => setEditingName(false)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") setEditingName(false);
+                    }}
+                    autoFocus
+                  />
+                ) : (
+                  <button
+                    className="name-display"
+                    onClick={() => setEditingName(true)}
+                  >
+                    {qrName}
+                  </button>
+                )}
+                <button className="save-btn-inline" onClick={saveToLibrary}>
+                  {saveLabel}
+                </button>
+                <button className={`new-btn-inline ${activeItemId ? "visible" : ""}`} onClick={startNew}>
+                  New
                 </button>
               </div>
-              <LogoCropper
-                imageSrc={logoRawSrc}
-                size={200}
-                borderRadius={config.logoBorderRadius}
-                onCropped={handleCropped}
-              />
+
               <div className="control-group">
-                <label>Corner Radius</label>
-                <div className="slider-row">
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    step="1"
-                    value={config.logoBorderRadius}
-                    onChange={(e) =>
-                      set("logoBorderRadius", Number(e.target.value))
-                    }
-                  />
-                  <span>{config.logoBorderRadius}px</span>
-                </div>
+                <label>Content</label>
+                <textarea
+                  value={config.data}
+                  onChange={(e) => set("data", e.target.value)}
+                  placeholder="URL, text, or any data..."
+                  rows={2}
+                />
               </div>
-              <div className="control-group">
-                <label>Logo Size</label>
-                <div className="slider-row">
-                  <input
-                    type="range"
-                    min="0.1"
-                    max="0.5"
-                    step="0.01"
-                    value={config.logoSize}
-                    onChange={(e) => set("logoSize", Number(e.target.value))}
-                  />
-                  <span>{Math.round(config.logoSize * 100)}%</span>
+
+              <Section title="Style" defaultOpen>
+                <div className="control-group">
+                  <label>Dot Style</label>
+                  <div className="option-grid">
+                    {DOT_TYPES.map((t) => (
+                      <button
+                        key={t.value}
+                        className={config.dotType === t.value ? "active" : ""}
+                        onClick={() => set("dotType", t.value)}
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
-              <div className="control-group">
-                <label>Logo Margin</label>
-                <div className="slider-row">
-                  <input
-                    type="range"
-                    min="0"
-                    max="20"
-                    step="1"
-                    value={config.logoMargin}
-                    onChange={(e) => set("logoMargin", Number(e.target.value))}
-                  />
-                  <span>{config.logoMargin}px</span>
+
+                <div className="control-group">
+                  <label>Eye Frame</label>
+                  <div className="option-grid">
+                    {EYE_TYPES.map((t) => (
+                      <button
+                        key={t.value}
+                        className={config.eyeType === t.value ? "active" : ""}
+                        onClick={() => set("eyeType", t.value)}
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            </>
-          ) : (
-            <div
-              className="logo-dropzone"
-              onClick={() => fileInputRef.current?.click()}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={(e) => {
-                e.preventDefault();
-                const file = e.dataTransfer.files[0];
-                if (file) handleLogoUpload(file);
-              }}
-            >
-              Drop image or click to upload
+
+                <div className="control-group">
+                  <label>Eye Dot</label>
+                  <div className="option-grid">
+                    {EYE_DOT_TYPES.map((t) => (
+                      <button
+                        key={t.value}
+                        className={config.eyeDotType === t.value ? "active" : ""}
+                        onClick={() => set("eyeDotType", t.value)}
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </Section>
+
+              <Section title="Colors" defaultOpen>
+                <div className="control-group">
+                  <div className="color-row">
+                    <div className="color-input">
+                      <input
+                        type="color"
+                        value={config.dotColor}
+                        onChange={(e) => set("dotColor", e.target.value)}
+                      />
+                      <span>Dots</span>
+                    </div>
+                    <div className="color-input">
+                      <input
+                        type="color"
+                        value={config.eyeColor}
+                        onChange={(e) => set("eyeColor", e.target.value)}
+                      />
+                      <span>Eyes</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="control-group">
+                  <label>Background</label>
+                  <div className="bg-toggle-row">
+                    <button
+                      className={!config.bgEnabled ? "active" : ""}
+                      onClick={() => set("bgEnabled", false)}
+                    >
+                      OFF
+                    </button>
+                    <button
+                      className={config.bgEnabled ? "active" : ""}
+                      onClick={() => set("bgEnabled", true)}
+                    >
+                      ON
+                    </button>
+                    <div className={`color-input bg-color-fade ${config.bgEnabled ? "visible" : ""}`}>
+                      <input
+                        type="color"
+                        value={config.bgColor}
+                        onChange={(e) => set("bgColor", e.target.value)}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </Section>
+
+              <Section title="Error Correction">
+                <div className="ec-grid">
+                  {EC_LEVELS.map((l) => (
+                    <button
+                      key={l.value}
+                      className={config.ecLevel === l.value ? "active" : ""}
+                      onClick={() => set("ecLevel", l.value)}
+                    >
+                      {l.label}
+                      <span>{l.pct}</span>
+                    </button>
+                  ))}
+                </div>
+              </Section>
+
+              <Section title="Logo" defaultOpen>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleLogoUpload(file);
+                  }}
+                />
+                {logoRawSrc ? (
+                  <>
+                    <div className="logo-header">
+                      <span>{logoName}</span>
+                      <button className="logo-remove" onClick={removeLogo}>
+                        Remove
+                      </button>
+                    </div>
+                    <LogoCropper
+                      imageSrc={logoRawSrc}
+                      size={200}
+                      borderRadius={config.logoBorderRadius}
+                      initialCropState={logoCropState}
+                      onCropped={handleCropped}
+                      onCropStateChange={handleCropStateChange}
+                    />
+                    <div className="control-group">
+                      <label>Corner Radius</label>
+                      <div className="slider-row">
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          step="1"
+                          value={config.logoBorderRadius}
+                          onChange={(e) =>
+                            set("logoBorderRadius", Number(e.target.value))
+                          }
+                        />
+                        <span>{config.logoBorderRadius}px</span>
+                      </div>
+                    </div>
+                    <div className="control-group">
+                      <label>Logo Size</label>
+                      <div className="slider-row">
+                        <input
+                          type="range"
+                          min="0.1"
+                          max="0.5"
+                          step="0.01"
+                          value={config.logoSize}
+                          onChange={(e) => set("logoSize", Number(e.target.value))}
+                        />
+                        <span>{Math.round(config.logoSize * 100)}%</span>
+                      </div>
+                    </div>
+                    <div className="control-group">
+                      <label>Logo Margin</label>
+                      <div className="slider-row">
+                        <input
+                          type="range"
+                          min="0"
+                          max="20"
+                          step="1"
+                          value={config.logoMargin}
+                          onChange={(e) => set("logoMargin", Number(e.target.value))}
+                        />
+                        <span>{config.logoMargin}px</span>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div
+                    className="logo-dropzone"
+                    onClick={() => fileInputRef.current?.click()}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const file = e.dataTransfer.files[0];
+                      if (file) handleLogoUpload(file);
+                    }}
+                  >
+                    Drop image or click to upload
+                  </div>
+                )}
+              </Section>
+
             </div>
           )}
-        </div>
-
-        <button className="save-btn" onClick={saveToLibrary}>
-          Save to Library
-        </button>
-        </>
-        )}
         </div>
       </div>
 
       <div className="preview">
-        <div
-          className="qr-container"
-          style={{
-            background: config.bgEnabled ? config.bgColor : "#fff",
-          }}
-        >
-          <div ref={qrRef} />
-        </div>
-        <div className="download-row">
-          <button onClick={() => download("png")}>Download PNG</button>
-          <button onClick={() => download("svg")}>Download SVG</button>
+        <div className="preview-center">
+          <div
+            className={`qr-container ${qrFade ? "" : "fading"}`}
+            style={{
+              background: config.bgEnabled ? config.bgColor : "#fff",
+            }}
+          >
+            <div ref={qrRef} />
+          </div>
+          <div className="download-row">
+            <button onClick={() => download("png")}>Download PNG</button>
+            <button onClick={() => download("svg")}>Download SVG</button>
+          </div>
         </div>
       </div>
     </div>
