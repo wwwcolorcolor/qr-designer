@@ -3,7 +3,7 @@
 A local-first QR code designer with live preview, logo embedding, and a personal library. No accounts, no cloud — everything runs in your browser and saves to localStorage.
 
 <div align="center">
-  <img src="screenshot.png" alt="QR Designer" width="800" />
+  <img src="qr-designer_preview.png" alt="QR Designer" width="800" />
 </div>
 
 ## Features
