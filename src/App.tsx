@@ -172,7 +172,9 @@ export function App() {
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
   const [detectedVersion, setDetectedVersion] = useState<number>(0);
   const [qrFade, setQrFade] = useState(true);
+  const [exportScale, setExportScale] = useState<1 | 2 | 4>(1);
   const nameInputRef = useRef<HTMLInputElement>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   const switchTab = useCallback((newTab: Tab) => {
     setTabFade(false);
@@ -394,8 +396,56 @@ export function App() {
     loadFromLibrary(entry);
   };
 
+  const exportLibrary = () => {
+    const data = JSON.stringify(library, null, 2);
+    const blob = new Blob([data], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `qr-library-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importLibrary = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const imported = JSON.parse(e.target?.result as string) as SavedQR[];
+        if (!Array.isArray(imported)) throw new Error("Invalid format");
+        // Merge: imported items replace existing ones with the same id, new ones prepended
+        const existingMap = new Map(library.map((item) => [item.id, item]));
+        for (const item of imported) existingMap.set(item.id, item);
+        const merged = [...existingMap.values()].sort((a, b) => b.timestamp - a.timestamp);
+        setLibrary(merged);
+        saveLibrary(merged);
+      } catch {
+        alert("Invalid library file — could not import.");
+      }
+    };
+    reader.readAsText(file);
+  };
+
   const PREVIEW_SIZE = 320;
-  const EXPORT_SIZE = 1024;
+  const EXPORT_SIZE = 1024 * exportScale;
+
+  // Scanability warning: logoSize is the ratio of logo width to QR width,
+  // so area coverage ≈ logoSize². EC tolerances per spec: L=7%, M=15%, Q=25%, H=30%.
+  const EC_TOLERANCES: Record<ErrorCorrectionLevel, number> = { L: 0.07, M: 0.15, Q: 0.25, H: 0.30 };
+  const logoCoverageWarning = logoCropped
+    ? (() => {
+        const coverage = config.logoSize * config.logoSize;
+        const tolerance = EC_TOLERANCES[config.ecLevel];
+        const coveragePct = Math.round(coverage * 100);
+        const tolerancePct = Math.round(tolerance * 100);
+        if (coverage > tolerance) {
+          return { level: "error" as const, msg: `⚠️ Logo covers ~${coveragePct}% of QR area — exceeds ${config.ecLevel} error correction (${tolerancePct}%). Scan may fail.` };
+        } else if (coverage > tolerance * 0.85) {
+          return { level: "warn" as const, msg: `⚠️ Logo covers ~${coveragePct}% — close to ${config.ecLevel} correction limit (${tolerancePct}%).` };
+        }
+        return null;
+      })()
+    : null;
 
   const download = async (extension: "png" | "svg") => {
     const scale = EXPORT_SIZE / PREVIEW_SIZE;
@@ -477,6 +527,25 @@ export function App() {
         <div className={`sidebar-scroll ${tabFade ? "visible" : ""}`}>
           {tab === "library" ? (
             <div className="library">
+              <input
+                ref={importInputRef}
+                type="file"
+                accept=".json,application/json"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) importLibrary(file);
+                  e.target.value = "";
+                }}
+              />
+              <div className="library-io-row">
+                <button className="library-io-btn" onClick={exportLibrary} title="Export library as JSON">
+                  Export JSON
+                </button>
+                <button className="library-io-btn" onClick={() => importInputRef.current?.click()} title="Import library from JSON">
+                  Import JSON
+                </button>
+              </div>
               {library.length === 0 ? (
                 <div className="library-empty">
                   No saved QR codes yet
@@ -800,7 +869,24 @@ export function App() {
           >
             <div ref={qrRef} className={`qr-canvas ${qrFade ? "" : "fading"}`} />
           </div>
+          {logoCoverageWarning && (
+            <div className={`scanability-warning ${logoCoverageWarning.level}`}>
+              {logoCoverageWarning.msg}
+            </div>
+          )}
           <div className="download-row">
+            <div className="resolution-picker">
+              {([1, 2, 4] as const).map((s) => (
+                <button
+                  key={s}
+                  className={exportScale === s ? "active" : ""}
+                  onClick={() => setExportScale(s)}
+                  title={`Export at ${1024 * s}px`}
+                >
+                  {s}×
+                </button>
+              ))}
+            </div>
             <button onClick={() => download("png")}>Download PNG</button>
             <button onClick={() => download("svg")}>Download SVG</button>
           </div>
